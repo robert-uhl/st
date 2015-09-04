@@ -1531,7 +1531,8 @@ ttywrite(const char *s, size_t n)
 				 * This means the buffer is getting full
 				 * again. Empty it.
 				 */
-				ttyread();
+				if (n < 256)
+					ttyread();
 				n -= r;
 				s += r;
 			} else {
@@ -2773,18 +2774,37 @@ tcontrolcode(uchar ascii)
 	case '\023': /* XOFF (IGNORED) */
 	case 0177:   /* DEL (IGNORED) */
 		return;
+	case 0x80:   /* TODO: PAD */
+	case 0x81:   /* TODO: HOP */
+	case 0x82:   /* TODO: BPH */
+	case 0x83:   /* TODO: NBH */
 	case 0x84:   /* TODO: IND */
 		break;
 	case 0x85:   /* NEL -- Next line */
 		tnewline(1); /* always go to first col */
 		break;
+	case 0x86:   /* TODO: SSA */
+	case 0x87:   /* TODO: ESA */
+		break;
 	case 0x88:   /* HTS -- Horizontal tab stop */
 		term.tabs[term.c.x] = 1;
 		break;
+	case 0x89:   /* TODO: HTJ */
+	case 0x8a:   /* TODO: VTS */
+	case 0x8b:   /* TODO: PLD */
+	case 0x8c:   /* TODO: PLU */
 	case 0x8d:   /* TODO: RI */
 	case 0x8e:   /* TODO: SS2 */
 	case 0x8f:   /* TODO: SS3 */
+	case 0x91:   /* TODO: PU1 */
+	case 0x92:   /* TODO: PU2 */
+	case 0x93:   /* TODO: STS */
+	case 0x94:   /* TODO: CCH */
+	case 0x95:   /* TODO: MW */
+	case 0x96:   /* TODO: SPA */
+	case 0x97:   /* TODO: EPA */
 	case 0x98:   /* TODO: SOS */
+	case 0x99:   /* TODO: SGCI */
 		break;
 	case 0x9a:   /* DECID -- Identify Terminal */
 		ttywrite(vtiden, sizeof(vtiden) - 1);
@@ -2793,9 +2813,9 @@ tcontrolcode(uchar ascii)
 	case 0x9c:   /* TODO: ST */
 		break;
 	case 0x90:   /* DCS -- Device Control String */
-	case 0x9f:   /* APC -- Application Program Command */
-	case 0x9e:   /* PM -- Privacy Message */
 	case 0x9d:   /* OSC -- Operating System Command */
+	case 0x9e:   /* PM -- Privacy Message */
+	case 0x9f:   /* APC -- Application Program Command */
 		tstrsequence(ascii);
 		return;
 	}
@@ -2895,15 +2915,15 @@ tputc(Rune u)
 	int width, len;
 	Glyph *gp;
 
+	control = ISCONTROL(u);
 	len = utf8encode(u, c);
-	if ((width = wcwidth(u)) == -1) {
+	if (!control && (width = wcwidth(u)) == -1) {
 		memcpy(c, "\357\277\275", 4); /* UTF_INVALID */
 		width = 1;
 	}
 
 	if (IS_SET(MODE_PRINT))
 		tprinter(c, len);
-	control = ISCONTROL(u);
 
 	/*
 	 * STR sequence must be checked before anything else
@@ -3411,6 +3431,7 @@ xinit(void)
 	Cursor cursor;
 	Window parent;
 	pid_t thispid = getpid();
+	XColor xmousefg, xmousebg;
 
 	if (!(xw.dpy = XOpenDisplay(NULL)))
 		die("Can't open display\n");
@@ -3483,11 +3504,22 @@ xinit(void)
 		die("XCreateIC failed. Could not obtain input method.\n");
 
 	/* white cursor, black outline */
-	cursor = XCreateFontCursor(xw.dpy, XC_xterm);
+	cursor = XCreateFontCursor(xw.dpy, mouseshape);
 	XDefineCursor(xw.dpy, xw.win, cursor);
-	XRecolorCursor(xw.dpy, cursor,
-		&(XColor){.red = 0xffff, .green = 0xffff, .blue = 0xffff},
-		&(XColor){.red = 0x0000, .green = 0x0000, .blue = 0x0000});
+
+	if (XParseColor(xw.dpy, xw.cmap, colorname[mousefg], &xmousefg) == 0) {
+		xmousefg.red   = 0xffff;
+		xmousefg.green = 0xffff;
+		xmousefg.blue  = 0xffff;
+	}
+
+	if (XParseColor(xw.dpy, xw.cmap, colorname[mousebg], &xmousebg) == 0) {
+		xmousebg.red   = 0x0000;
+		xmousebg.green = 0x0000;
+		xmousebg.blue  = 0x0000;
+	}
+
+	XRecolorCursor(xw.dpy, cursor, &xmousefg, &xmousebg);
 
 	xw.xembed = XInternAtom(xw.dpy, "_XEMBED", False);
 	xw.wmdeletewin = XInternAtom(xw.dpy, "WM_DELETE_WINDOW", False);
@@ -4259,9 +4291,11 @@ usage(void)
 {
 	die("%s " VERSION " (c) 2010-2015 st engineers\n"
 	"usage: st [-a] [-v] [-c class] [-f font] [-g geometry] [-o file]\n"
-	"          [-i] [-t title] [-w windowid] [-e command ...] [command ...]\n"
+	"          [-i] [-t title] [-T title] [-w windowid] [-e command ...]"
+	" [command ...]\n"
 	"       st [-a] [-v] [-c class] [-f font] [-g geometry] [-o file]\n"
-	"          [-i] [-t title] [-w windowid] [-l line] [stty_args ...]\n",
+	"          [-i] [-t title] [-T title] [-w windowid] [-l line]"
+	" [stty_args ...]\n",
 	argv0);
 }
 
@@ -4302,6 +4336,7 @@ main(int argc, char *argv[])
 		opt_line = EARGF(usage());
 		break;
 	case 't':
+	case 'T':
 		opt_title = EARGF(usage());
 		break;
 	case 'w':
