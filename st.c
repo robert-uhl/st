@@ -68,6 +68,7 @@ char *argv0;
 #define LEN(a)			(sizeof(a) / sizeof(a)[0])
 #define DEFAULT(a, b)		(a) = (a) ? (a) : (b)
 #define BETWEEN(x, a, b)	((a) <= (x) && (x) <= (b))
+#define DIVCEIL(n, d)		(((n) + ((d) - 1)) / (d))
 #define ISCONTROLC0(c)		(BETWEEN(c, 0, 0x1f) || (c) == '\177')
 #define ISCONTROLC1(c)		(BETWEEN(c, 0x80, 0x9f))
 #define ISCONTROL(c)		(ISCONTROLC0(c) || ISCONTROLC1(c))
@@ -439,7 +440,6 @@ static void xresettitle(void);
 static void xsetpointermotion(int);
 static void xseturgency(int);
 static void xsetsel(char *, Time);
-static void xtermclear(int, int, int, int);
 static void xunloadfont(Font *);
 static void xunloadfonts(void);
 static void xresize(int, int);
@@ -523,14 +523,15 @@ static int cmdfd;
 static pid_t pid;
 static Selection sel;
 static int iofd = 1;
-static char **opt_cmd = NULL;
-static char *opt_io = NULL;
-static char *opt_title = NULL;
-static char *opt_embed = NULL;
+static char **opt_cmd  = NULL;
 static char *opt_class = NULL;
-static char *opt_font = NULL;
-static char *opt_line = NULL;
-static int oldbutton = 3; /* button event on startup: 3 = release */
+static char *opt_embed = NULL;
+static char *opt_font  = NULL;
+static char *opt_io    = NULL;
+static char *opt_line  = NULL;
+static char *opt_name  = NULL;
+static char *opt_title = NULL;
+static int oldbutton   = 3; /* button event on startup: 3 = release */
 
 static char *usedfont = NULL;
 static double usedfontsize = 0;
@@ -1150,8 +1151,7 @@ selnotify(XEvent *e)
 	 * Deleting the property again tells the selection owner to send the
 	 * next data chunk in the property.
 	 */
-	if (e->type == PropertyNotify)
-		XDeleteProperty(xw.dpy, xw.win, (int)property);
+	XDeleteProperty(xw.dpy, xw.win, (int)property);
 }
 
 void
@@ -1403,9 +1403,9 @@ stty(void)
 		if ((n = strlen(s)) > siz-1)
 			die("stty parameter length too long\n");
 		*q++ = ' ';
-		q = memcpy(q, s, n);
+		memcpy(q, s, n);
 		q += n;
-		siz-= n + 1;
+		siz -= n + 1;
 	}
 	*q = '\0';
 	if (system(cmd) != 0)
@@ -3212,17 +3212,6 @@ xsetcolorname(int x, const char *name)
 	return 0;
 }
 
-void
-xtermclear(int col1, int row1, int col2, int row2)
-{
-	XftDrawRect(xw.draw,
-			&dc.col[IS_SET(MODE_REVERSE) ? defaultfg : defaultbg],
-			borderpx + col1 * xw.cw,
-			borderpx + row1 * xw.ch,
-			(col2-col1+1) * xw.cw,
-			(row2-row1+1) * xw.ch);
-}
-
 /*
  * Absolute coordinates.
  */
@@ -3237,7 +3226,8 @@ xclear(int x1, int y1, int x2, int y2)
 void
 xhints(void)
 {
-	XClassHint class = {termname, opt_class ? opt_class : termname};
+	XClassHint class = {opt_name ? opt_name : termname,
+	                    opt_class ? opt_class : termname};
 	XWMHints wm = {.flags = InputHint, .input = 1};
 	XSizeHints *sizeh = NULL;
 
@@ -3287,8 +3277,9 @@ xloadfont(Font *f, FcPattern *pattern)
 {
 	FcPattern *match;
 	FcResult result;
+	XGlyphInfo extents;
 
-	match = FcFontMatch(NULL, pattern, &result);
+	match = XftFontMatch(xw.dpy, xw.scr, pattern, &result);
 	if (!match)
 		return 1;
 
@@ -3296,6 +3287,10 @@ xloadfont(Font *f, FcPattern *pattern)
 		FcPatternDestroy(match);
 		return 1;
 	}
+
+	XftTextExtentsUtf8(xw.dpy, f->match,
+		(const FcChar8 *) ascii_printable,
+		strlen(ascii_printable), &extents);
 
 	f->set = NULL;
 	f->pattern = FcPatternDuplicate(pattern);
@@ -3306,7 +3301,7 @@ xloadfont(Font *f, FcPattern *pattern)
 	f->rbearing = f->match->max_advance_width;
 
 	f->height = f->ascent + f->descent;
-	f->width = f->lbearing + f->rbearing;
+	f->width = DIVCEIL(extents.xOff, strlen(ascii_printable));
 
 	return 0;
 }
@@ -3349,9 +3344,6 @@ xloadfonts(char *fontstr, double fontsize)
 		}
 		defaultfontsize = usedfontsize;
 	}
-
-	FcConfigSubstitute(0, pattern, FcMatchPattern);
-	FcDefaultSubstitute(pattern);
 
 	if (xloadfont(&dc.font, pattern))
 		die("st: can't open font %s\n", fontstr);
@@ -3423,6 +3415,7 @@ xzoomabs(const Arg *arg)
 	xunloadfonts();
 	xloadfonts(usedfont, arg->f);
 	cresize(0, 0);
+	ttyresize();
 	redraw();
 	xhints();
 }
@@ -3469,7 +3462,7 @@ xinit(void)
 	if (xw.gm & XNegative)
 		xw.l += DisplayWidth(xw.dpy, xw.scr) - xw.w - 2;
 	if (xw.gm & YNegative)
-		xw.t += DisplayWidth(xw.dpy, xw.scr) - xw.h - 2;
+		xw.t += DisplayHeight(xw.dpy, xw.scr) - xw.h - 2;
 
 	/* Events */
 	xw.attrs.background_pixel = dc.col[defaultbg].pixel;
@@ -3674,7 +3667,7 @@ xmakeglyphfontspecs(XftGlyphFontSpec *specs, const Glyph *glyphs, int len, int x
 		specs[numspecs].font = frc[f].font;
 		specs[numspecs].glyph = glyphidx;
 		specs[numspecs].x = (short)xp;
-		specs[numspecs].y = (short)(winy + frc[f].font->ascent);
+		specs[numspecs].y = (short)yp;
 		xp += runewidth;
 		numspecs++;
 	}
@@ -3980,7 +3973,6 @@ drawregion(int x1, int y1, int x2, int y2)
 		if (!term.dirty[y])
 			continue;
 
-		xtermclear(0, y, term.col, y);
 		term.dirty[y] = 0;
 
 		specs = term.specbuf;
@@ -4206,7 +4198,6 @@ cresize(int width, int height)
 
 	tresize(col, row);
 	xresize(col, row);
-	ttyresize();
 }
 
 void
@@ -4216,6 +4207,7 @@ resize(XEvent *e)
 		return;
 
 	cresize(e->xconfigure.width, e->xconfigure.height);
+	ttyresize();
 }
 
 void
@@ -4244,8 +4236,9 @@ run(void)
 		}
 	} while (ev.type != MapNotify);
 
-	ttynew();
 	cresize(w, h);
+	ttynew();
+	ttyresize();
 
 	clock_gettime(CLOCK_MONOTONIC, &last);
 	lastblink = last;
@@ -4329,14 +4322,14 @@ run(void)
 void
 usage(void)
 {
-	die("%s " VERSION " (c) 2010-2016 st engineers\n"
-	"usage: st [-a] [-v] [-c class] [-f font] [-g geometry] [-o file]\n"
-	"          [-i] [-t title] [-T title] [-w windowid] [-e command ...]"
-	" [command ...]\n"
-	"       st [-a] [-v] [-c class] [-f font] [-g geometry] [-o file]\n"
-	"          [-i] [-t title] [-T title] [-w windowid] -l line"
-	" [stty_args ...]\n",
-	argv0);
+	die("usage: %s [-aiv] [-c class] [-f font] [-g geometry]"
+	    " [-n name] [-o file]\n"
+	    "          [-T title] [-t title] [-w windowid]"
+	    " [[-e] command [args ...]]\n"
+	    "       %s [-aiv] [-c class] [-f font] [-g geometry]"
+	    " [-n name] [-o file]\n"
+	    "          [-T title] [-t title] [-w windowid] -l line"
+	    " [stty_args ...]\n", argv0, argv0);
 }
 
 int
@@ -4375,6 +4368,9 @@ main(int argc, char *argv[])
 	case 'l':
 		opt_line = EARGF(usage());
 		break;
+	case 'n':
+		opt_name = EARGF(usage());
+		break;
 	case 't':
 	case 'T':
 		opt_title = EARGF(usage());
@@ -4383,6 +4379,8 @@ main(int argc, char *argv[])
 		opt_embed = EARGF(usage());
 		break;
 	case 'v':
+		die("%s " VERSION " (c) 2010-2016 st engineers\n", argv0);
+		break;
 	default:
 		usage();
 	} ARGEND;
